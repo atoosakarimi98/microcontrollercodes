@@ -1,6 +1,5 @@
 /*
- * Author: Atoosa Karimi (akarimi@etalim.com)
- * Supervisor: Tim Henthorne (thenthorne@etalim.com)
+ * Author: Atoosa Karimi
  * Description: preliminary code for interfacing the Sanhua 3 way valve using LIN protocol.
  * Note: The lin_bus.cpp was modified to output the correct ID according to LIN 1.3.
  */
