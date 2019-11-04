@@ -1,0 +1,36 @@
+
+//MVP REL, -10000 {0x01 04 01 00 FF FF D8 F0 CC}
+//MVP REL, 10000 { 0x01 04 01 00 00 00 27 10 3D}
+
+
+
+if (current_signal == EXIT_SIG) {
+	current_state = _IDLE;
+}
+
+switch(current_state) {
+	
+	case _IDLE:
+		
+		if (current_signal == START_SIG)
+			current_state = _INITIALIZED
+		
+		else if (current_signal == UP_SIG) 
+			Serial.write(scrollup_command, COM_LEN);	
+			
+		else if (current_signal == DOWN_SIG)
+			Serial.write(scrolldown_command, COM_LEN);
+			
+		Serial.write(stop_command, COM_LEN);
+			
+	case _ERROR:
+		Serial.write(stop_command, COM_LEN);
+		if (current_signal == EXIT_SIG)
+			current_state = _IDLE;
+		
+	case _INITIALZIED:
+		//responsive to crap	
+	
+}
+	
+	

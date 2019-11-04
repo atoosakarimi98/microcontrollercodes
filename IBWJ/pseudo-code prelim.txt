@@ -1,0 +1,74 @@
+
+pseudo-code for software control of IBWJ automation:
+
+global variable wip
+global variable sigchange
+global variable stepcount
+global variable userzero
+global variable systemzero
+
+
+define constant LEAD
+define constant STEPANGLE
+define constant LED_seam1
+define constant LED_seam2
+define constant LED_seam3
+define constant LED_user_zero
+
+if idle:
+	wip = 0
+	while (start not pressed); //create an infinite loop
+	set_system_zero()
+	
+else if set user zero:
+	set LED_user_zero on 
+	if (exit pressed)
+		go_to_idle()
+	while (set zero not pressed)
+		allow_user_to_scroll()
+	user_set_zero()
+
+else if initialized:
+	set LED_user_zero off
+	set LED_initialized on
+	if (exit pressed)
+		go_to_idle()
+	
+	#if !wip
+	else if (seam1 pressed):
+		wip = true
+		set LED_seam1 on
+		set LED_seam2 off
+		set LED_seam3 off
+		go_to_seam1()
+		
+	else if (seam2 pressed):
+		wip = true
+		set LED_seam2 on
+		set LED_seam1 off
+		set LED_seam3 off
+		go_to_seam2()
+		
+	else if (seam3 pressed):
+		wip = true
+		set LED_seam3 on
+		set LED_seam1 off
+		set LED_seam2 off
+		go_to_seam3()
+		
+	else if (set zero pressed):
+		wip = true
+		user_set_zero()
+	
+	else if (scroll pressed):
+		allow_user_to_scroll()
+		
+	else if (start pressed);
+	else:
+		go_to_error()
+	#end if
+	
+else if error:
+	allow_user_to_scroll_ltd()
+else:
+	go_to_idle()

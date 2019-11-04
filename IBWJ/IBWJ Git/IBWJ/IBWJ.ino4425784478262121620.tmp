@@ -1,0 +1,209 @@
+/* 
+ *  Date: 25 April, 2019
+ * Author: Atoosa Karimi (akarimi@etalim.com)
+ * Owner: Keith Antonelli (kantonelli@etalim.com)
+ * Description: Code for the internal bore hole welding jig positioning
+ * automation. <add more description> 
+ * Documentation: <insert location of specifications and supporting documents>
+ */
+
+//libraries 
+#include "PinChangeInterrupt.h"
+
+//pin definitions (buttons and actuators)
+#define STOP_BUTTON 3
+#define START_BUTTON 4
+#define USER_REF_BUTTON 5
+#define SEAM1_BUTTON 6
+#define SEAM2_BUTTON 7
+#define SEAM3_BUTTON 8
+#define OPTO_OVERTRAVEL 9
+#define OPTO_SYSREF 10
+#define JOYSTICK A3
+#define SEAM1_LED 13
+#define SEAM2_LED 12
+#define SEAM3_LED 11
+
+
+//signal definitions
+#define NOTHING_SIG 0
+#define START_SIG 1
+#define SEAM1_SIG 2
+#define SEAM2_SIG 3
+#define SEAM3_SIG 4
+
+//state definitions
+#define _IDLE 0
+#define _INITIALIZED 1
+#define _ERROR 2
+
+//constants
+#define COM_LEN 9 //communication with TMCM-1140 is 9 bytes
+#define EN 2 //RS485 shield enabler pin
+#define ADC_VOLT_CONVERSION 0.0049 //derived from the ADC and actual voltage relationship of analogRead(pin)
+#define JOYSTICK_UPTHRESH 4.0
+#define JOYSTICK_DOWNTHRESH 1.0
+
+//function prototypes
+char calculate_checksum(char command[]);
+void crack_byte(byte b,int variable[8]);
+void stop_motor(void);
+void set_user_ref(void);
+void go_seam1(void);
+void go_seam2(void);
+void go_seam3(void);
+void start_fsm(void);
+void over_travel(void);
+
+//commands
+byte stop_command[]= {0x01,0x03,0x0,0x0,0x0,0x0,0x0,0x0,0x04};
+byte ROR_command[] = {0x01, 0x01, 0x0, 0x0, 0x0, 0x0, 0x03, 0xE8, 0xED};
+byte ROL_command[] = {0x01, 0x02, 0x0, 0x0, 0x0, 0x0, 0x03, 0xE8, 0xEE};
+byte actualpos_command[] = {0x01, 0x06, 0x01, 0x0, 0x0, 0x0, 0x0,0x0, 0x08};
+byte set_user_ref_command[] = {0x01, 0x20, 0x02, 0x0, 0x0, 0x0, 0x0, 0x0, 0x23}; //stores current position into coordinate number 2 - associated with user reference
+byte is_WIP_command[] = {0x01, 0x06, 0x08, 0x0, 0x0, 0x0, 0x0, 0x0, 0xF}; 
+byte set_pos_zero_command[] = {0x01, 0x05, 0x01, 0x0, 0x0, 0x0, 0x0, 0x0, 0x07};
+byte set_encoder_zero_command[]={0x01, 0x05, 0xD1, 0x0, 0x0, 0x0, 0x0, 0x0, 0xD7};
+byte set_EEPROM_storage[] = {0x01, 0x09, 0x54, 0x0, 0x0, 0x0, 0x0, 0x01, 0x5F}; //set global parameter 84 to 1 to store coordinates automatically in EEPROM
+byte store_actualpos_in_EEPROM[] = {0x01, 0x07, 0x01, 0x0, 0x0, 0x0, 0x0, 0x0, 0x09}; 
+byte scrolldown_command[] = {0x01, 0x04, 0x01, 0x0, 0xFF, 0xFF, 0xD8, 0xF0, 0xCC};
+byte scrollup_command[] = {0x01, 0x04, 0x01, 0x0, 0x0, 0x0, 0x03, 0xE8, 0xF1};
+
+//variables
+volatile byte new_signal;
+byte current_signal;
+byte previous_signal;
+volatile byte current_state;
+byte reply[9];
+float joystick_status;
+
+void setup() {
+  Serial.begin(9600); //set up RS485
+  
+  //set up buttons
+  pinMode(STOP_BUTTON, INPUT_PULLUP);
+  pinMode(START_BUTTON, INPUT_PULLUP);
+  pinMode(USER_REF_BUTTON, INPUT_PULLUP);
+  pinMode(SEAM1_BUTTON, INPUT_PULLUP);
+  pinMode(SEAM2_BUTTON, INPUT_PULLUP);
+  pinMode(SEAM3_BUTTON, INPUT_PULLUP);
+  
+  //set up opto switches
+  pinMode(OPTO_OVERTRAVEL, INPUT_PULLUP);
+  pinMode(OPTO_SYSREF, INPUT_PULLUP);
+  
+  //set up joystick
+  pinMode(JOYSTICK, INPUT);
+
+  //set up LEDs
+  pinMode(SEAM1_LED, OUTPUT);
+  pinMode(SEAM2_LED, OUTPUT);
+  pinMode(SEAM3_LED, OUTPUT);
+  
+  //set up pin change interrupts
+  attachPCINT(digitalPinToPCINT(STOP_BUTTON), stop_motor, RISING);
+  attachPCINT(digitalPinToPCINT(USER_REF_BUTTON), set_user_ref, RISING);
+  attachPCINT(digitalPinToPCINT(START_BUTTON), start_fsm, RISING);
+  attachPCINT(digitalPinToPCINT(SEAM1_BUTTON), go_seam1, RISING);
+  attachPCINT(digitalPinToPCINT(SEAM2_BUTTON), go_seam2, RISING); 
+  attachPCINT(digitalPinToPCINT(SEAM3_BUTTON), go_seam3, RISING);
+  attachPCINT(digitalPinToPCINT(OPTO_OVERTRAVEL), over_travel, RISING);
+  attachPCINT(digitalPinToPCINT(OPTO_SYSREF), set_sys_ref, RISING);
+
+  Serial.write(set_EEPROM_storage, COM_LEN); //set the flag to automatically store all coordinates in EEPROM
+}
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  noInterrupts();
+  previous_signal = current_signal;
+  current_signal = new_signal;
+  interrupts();
+
+  joystick_status = analogRead(JOYSTICK)*ADC_VOLT_CONVERSION; //store the voltage read from the joystick
+
+  switch(current_state) {
+    case _IDLE:
+      if (joystick_status >= JOYSTICK_UPTHRESH) {
+        noInterrupts();
+        Serial.write(scrollup_command,COM_LEN);
+        interrupts(); }
+      else if (joystick_status <= JOYSTICK_DOWNTHRESH) {
+        noInterrupts();
+        Serial.write(scrolldown_command,COM_LEN);
+        interrupts(); }
+      if (current_signal == NOTHING_SIG) //do nothing
+        break;
+      else if (current_signal == START_SIG)
+        current_state = _INITIALIZED;
+
+    case _ERROR:
+      Serial.write(stop_command, COM_LEN);
+      if (current_signal == NOTHING_SIG)
+        current_state = _IDLE;
+      
+
+    case _INITIALIZED:
+      if (joystick_status >= JOYSTICK_UPTHRESH) {
+        noInterrupts();
+        Serial.write(scrollup_command,COM_LEN);
+        interrupts(); }
+      else if (joystick_status <= JOYSTICK_DOWNTHRESH) {
+        noInterrupts();
+        Serial.write(scrolldown_command,COM_LEN);
+        interrupts(); }
+      if (current_signal == NOTHING_SIG)
+        break;
+      else if (current_signal == SEAM1_SIG) {
+        digitalWrite(SEAM1_LED, HIGH); 
+        digitalWrite(SEAM2_LED, LOW);
+        digitalWrite(SEAM3_LED, LOW);
+        }
+      else if (current_signal == SEAM2_SIG) {
+        digitalWrite(SEAM2_LED, HIGH); 
+        digitalWrite(SEAM3_LED, LOW);
+        digitalWrite(SEAM1_LED, LOW);
+        }
+      else if (current_signal == SEAM3_SIG) {
+        digitalWrite(SEAM3_LED, HIGH); 
+        digitalWrite(SEAM2_LED, LOW);
+        digitalWrite(SEAM1_LED, LOW);
+        }
+    }
+
+}
+
+void stop_motor() {
+  Serial.write(store_actualpos_in_EEPROM, COM_LEN); //in case of power cycle store the actual position into EEPROM, it will be restored on power up by default
+  Serial.write(stop_command, COM_LEN);
+  current_state = _IDLE;
+  new_signal = NOTHING_SIG;
+  }
+void set_user_ref() {
+  //instruction to capture coordinate in coordinate 2 (stored in both RAM and EEPROM)
+  Serial.write(set_user_ref_command, COM_LEN);
+}
+
+void go_seam1() {
+  new_signal = SEAM1_SIG;
+  }
+void go_seam2() {
+  new_signal = SEAM2_SIG;
+  }
+void go_seam3() {
+  new_signal = SEAM3_SIG;
+  }
+void start_fsm() {
+  new_signal = START_SIG;
+  }
+void over_travel() {
+  Serial.write(stop_command, COM_LEN);
+  current_state = _ERROR;
+  }
+void set_sys_ref(){
+  Serial.write(stop_command, COM_LEN);
+  Serial.write(set_pos_zero_command, COM_LEN);
+  Serial.write(set_encoder_zero_command, COM_LEN);
+  new_signal = NOTHING_SIG;
+  current_state = _IDLE;
+}
